@@ -398,3 +398,12 @@ register_mjlab_task(
     rl_cfg=MicroduckStaticGraspRlCfg,
     runner_cls=GroundGraspFromPickRunner,
 )
+
+# Strict: beak contact and a CoM past the toes cost far more (run 1 learned to lean on its beak), wider pose / lip pulls.
+register_mjlab_task(
+    task_id="Mjlab-StaticGrasp-Strict-FromPick-MicroDuck",
+    env_cfg=make_microduck_static_grasp_env_cfg(strict=True),
+    play_env_cfg=make_microduck_static_grasp_env_cfg(play=True, strict=True),
+    rl_cfg=MicroduckStaticGraspRlCfg,
+    runner_cls=GroundGraspFromPickRunner,
+)

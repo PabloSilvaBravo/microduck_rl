@@ -42,3 +42,12 @@ def test_static_pose_inside_the_joint_ranges():
     q = np.array(STATIC_POSE)
     assert lim.shape == (14, 2)
     assert np.all(q >= lim[:, 0]) and np.all(q <= lim[:, 1])
+
+
+def test_strict_variant_prices_beak_support_harder():
+    base = make_microduck_static_grasp_env_cfg().rewards
+    strict = load_env_cfg("Mjlab-StaticGrasp-Strict-FromPick-MicroDuck").rewards
+    assert strict["beak_floor_touch"].weight < base["beak_floor_touch"].weight < 0
+    assert strict["head_floor_impact"].weight < base["head_floor_impact"].weight < 0
+    assert strict["com_support"].params["outside_floor"] < -1.0 and strict["com_support"].weight > 0
+    assert strict["lip_height_wide"].weight > 0 and strict["lip_height_wide"].params["std"] > base["lip_height"].params["std"]

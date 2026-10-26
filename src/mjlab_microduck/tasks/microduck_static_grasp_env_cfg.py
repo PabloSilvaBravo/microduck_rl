@@ -39,24 +39,34 @@ BEAK_TOUCH_WEIGHT = -2.0          # per step with the head or jaw on the floor (
 BEAK_FORCE_WEIGHT = -1.5          # per N, from 0 N (the ground-grasp env starts at 1 N for the head, 3 N for the jaw)
 
 
-def make_microduck_static_grasp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+# Strict variant (run 2): run 1 (sg-r1-frompick-1026) grasped 6/6 by iteration 500 by LEANING on the beak (touch
+# 0.16-0.32 s, up to 15 N, CoM up to 1.9 cm in front of the toes): the touch costs were small next to grasp_held (15).
+STRICT = dict(beak_touch_weight=-10.0, beak_touch_threshold=0.2, beak_force_weight=-3.0, com_support_weight=6.0,
+              com_outside_floor=-3.0, static_pose_weight=6.0, static_pose_std=0.5, lip_wide_weight=2.0,
+              lip_wide_std=0.02, hold_start=0.20)
+
+
+def make_microduck_static_grasp_env_cfg(play: bool = False, strict: bool = False) -> ManagerBasedRlEnvCfg:
     cfg = make_microduck_ground_grasp_env_cfg(play=play)
+    k = STRICT if strict else {}
+    hold_start = k.get("hold_start", HOLD_START)
 
     cfg.actions["mouth"].open_rad = STATIC_JAW_RAD
     cfg.events["reset_object"].params["nominal_xy"] = OBJECT_NOMINAL_XY
     cfg.rewards.pop("beak_bisector", None)
 
     for name in ("head_floor_impact", "jaw_floor_impact"):
-        cfg.rewards[name].weight = BEAK_FORCE_WEIGHT
+        cfg.rewards[name].weight = k.get("beak_force_weight", BEAK_FORCE_WEIGHT)
         cfg.rewards[name].params["threshold"] = 0.0
     cfg.rewards["beak_floor_touch"] = RewardTermCfg(
-        func=microduck_mdp.beak_floor_touch, weight=BEAK_TOUCH_WEIGHT,
-        params={"sensor_names": ("head_floor_contact", "jaw_floor_contact"), "threshold": 0.05},
+        func=microduck_mdp.beak_floor_touch, weight=k.get("beak_touch_weight", BEAK_TOUCH_WEIGHT),
+        params={"sensor_names": ("head_floor_contact", "jaw_floor_contact"),
+                "threshold": k.get("beak_touch_threshold", 0.05)},
     )
     cfg.rewards["static_pose"] = RewardTermCfg(
-        func=microduck_mdp.static_pose_track, weight=STATIC_POSE_WEIGHT,
-        params={"target": STATIC_POSE, "command_name": "twist", "std": 0.25,
-                "phase_start": HOLD_START, "phase_end": HOLD_END},
+        func=microduck_mdp.static_pose_track, weight=k.get("static_pose_weight", STATIC_POSE_WEIGHT),
+        params={"target": STATIC_POSE, "command_name": "twist", "std": k.get("static_pose_std", 0.25),
+                "phase_start": hold_start, "phase_end": HOLD_END},
     )
     cfg.rewards["lip_height"] = RewardTermCfg(
         func=microduck_mdp.lip_height_track, weight=LIP_HEIGHT_WEIGHT,
@@ -68,7 +78,14 @@ def make_microduck_static_grasp_env_cfg(play: bool = False) -> ManagerBasedRlEnv
         params={"command_name": "twist", "phase_start": HOLD_START + 0.02, "phase_end": 0.30},
     )
     cfg.rewards["com_support"] = RewardTermCfg(
-        func=microduck_mdp.com_support_margin, weight=COM_SUPPORT_WEIGHT,
-        params={"command_name": "twist", "phase_start": HOLD_START, "phase_end": HOLD_END},
+        func=microduck_mdp.com_support_margin, weight=k.get("com_support_weight", COM_SUPPORT_WEIGHT),
+        params={"command_name": "twist", "phase_start": hold_start, "phase_end": HOLD_END,
+                "outside_floor": k.get("com_outside_floor", -1.0)},
     )
+    if strict:
+        cfg.rewards["lip_height_wide"] = RewardTermCfg(
+            func=microduck_mdp.lip_height_track, weight=k["lip_wide_weight"],
+            params={"command_name": "twist", "target": LIP_TARGET, "std": k["lip_wide_std"],
+                    "phase_start": hold_start, "phase_end": 0.31},
+        )
     return cfg

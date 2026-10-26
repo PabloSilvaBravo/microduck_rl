@@ -66,8 +66,9 @@ def bounds(sm, family, theta_rng):
 
 def score(x, sm, a, detail=False):
     q, th = decode(x, a.family)
-    if np.any(q < sm.lo + PAD - 1e-9) or np.any(q > sm.hi - PAD + 1e-9):
-        return (1e3, None) if detail else 1e3
+    viol = float(np.clip(sm.lo + PAD - q, 0, None).sum() + np.clip(q - (sm.hi - PAD), 0, None).sum())
+    if viol > 1e-9:                     # out of range: worse than any in-range pose, graded to lead back inside
+        return (1e9 * (1 + viol), None) if detail else 1e9 * (1 + viol)
     r = sm.evaluate(q, th)
     H = a.h / 1000
     beak_low = min(r["head_low_vis"], r["head_low_col"])
@@ -159,7 +160,7 @@ def main():
     x = res.x
     pol = minimize(score, x, args=(sm, a), method="Nelder-Mead", bounds=b,
                    options=dict(maxiter=4000, xatol=1e-5, fatol=1e-6, adaptive=True))
-    if pol.fun < res.fun and score(pol.x, sm, a) < 1e3:
+    if pol.fun < res.fun and score(pol.x, sm, a) < 1e9:
         x = pol.x
     s = summary(sm, x, a)
     s["search_s"] = time.time() - t0

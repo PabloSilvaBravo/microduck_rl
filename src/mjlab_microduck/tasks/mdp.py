@@ -8233,10 +8233,12 @@ def com_support_margin(
     x_back: float = -0.0158,
     x_front: float = 0.0298,
     scale: float = 0.01,
+    outside_floor: float = -1.0,
 ) -> torch.Tensor:
     """Static balance in the hold window: the whole robot's centre of mass, along the heading, against the soles'
     front and back edges (x_back / x_front: measured from the midpoint of the foot sites, sg_model, flat feet).
-    Returns clamp(margin / scale, -1, 1): +1 with >= 1 cm to spare, negative once the CoM is past an edge."""
+    Returns clamp(margin / scale, outside_floor, 1): +1 with >= 1 cm to spare, negative once the CoM is past an edge
+    (outside_floor < -1 makes leaning on something other than the feet cost more than balancing pays)."""
     robot: Entity = env.scene["robot"]
     c = _gg_cache(env)
     if "foot_site_ids" not in c:
@@ -8252,4 +8254,4 @@ def com_support_margin(
     margin = torch.minimum(x - x_back, x_front - x)
     phase = _gp_phase(env, command_name)
     gate = ((phase >= phase_start) & (phase < phase_end)).float()
-    return gate * torch.clamp(margin / scale, -1.0, 1.0)
+    return gate * torch.clamp(margin / scale, outside_floor, 1.0)

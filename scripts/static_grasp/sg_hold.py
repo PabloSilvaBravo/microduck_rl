@@ -152,7 +152,7 @@ def calibrate(sim, q, theta, targets0, sim_h=1.0, rounds=3, secs=12.0):
 
 
 def hold(sim, qpos0, targets, theta, secs=10.0, push=None, push_at=2.0, push_dur=0.2, frames=None, cam=None,
-         renderer=None):
+         renderer=None, qlog=None):
     sim.reset(qpos0, targets, theta)
     log = []
     z0 = None
@@ -169,6 +169,8 @@ def hold(sim, qpos0, targets, theta, secs=10.0, push=None, push_at=2.0, push_dur
         log.append(dict(t=t, beak_low=s["beak_low"], margin=s["margin"], head_force=s["head_force"],
                         nonfoot=s["nonfoot"], tilt=tilt, tau_max=float(np.abs(s["tau"]).max()),
                         drift=float(np.linalg.norm(s["root"][:2] - qpos0[sim.sm.free_q:sim.sm.free_q + 2]))))
+        if qlog is not None:
+            qlog.append(sim.d.qpos.copy())
         if renderer is not None and i % 2 == 0:
             cam.lookat[:] = [sim.d.xpos[sim.trunk][0] + 0.05, 0, 0.06]
             renderer.update_scene(sim.d, camera=cam)
@@ -241,7 +243,11 @@ def main():
         renderer = mujoco.Renderer(sim.m, 480, 640)
         cam = mujoco.MjvCamera(); cam.type = mujoco.mjtCamera.mjCAMERA_FREE
         cam.azimuth, cam.elevation, cam.distance = 90.0, -8.0, 0.5
-    log = hold(sim, qpos0, targets, th, secs=20.0, frames=frames, cam=cam, renderer=renderer)
+    ql = []
+    log = hold(sim, qpos0, targets, th, secs=20.0, frames=frames, cam=cam, renderer=renderer, qlog=ql)
+    names = [mujoco.mj_id2name(sim.m, mujoco.mjtObj.mjOBJ_JOINT, j) for j in range(sim.m.njnt)]
+    np.savez(OUT / f"{name}_hold.npz", t=np.array([r["t"] for r in log]), qpos=np.array(ql),
+             joint_names=np.array(names))
     res["hold"] = stats(log)
     res["hold_log"] = [dict(t=r["t"], beak_mm=1000 * r["beak_low"], margin_cm=100 * r["margin"], tilt=r["tilt"],
                             head_N=r["head_force"]) for r in log[::5]]
