@@ -9,7 +9,7 @@ nominal spot (+ offset). Reports, per rollout and summed:
     (time and peak force) over the whole pick;
   - balance: CoM margin over the support polygon in the hold window, falls;
   - commanded targets past the joint ranges (robotd only clamps to +-pi), peak joint speed, RMS torque;
-  - freeze test (--freeze): at phase 0.27 the policy is stopped and its last targets are held constant for 3 s,
+  - freeze test (--freeze): mid-hold the policy is stopped and its last targets are held constant for 3 s,
     with the mouth open: does the pose stay up without the beak touching? (static stability of the policy's pose)
 
   PYTHONPATH=src .venv-mjlab/bin/python scripts/static_grasp/sg_eval.py POLICY.onnx --name r1 [--seeds 8] [--freeze]
@@ -32,17 +32,32 @@ OUT = Path("/Users/remi/microduck/notes/static-grasp/evals")
 HOME = S.DEFAULT_POSE
 
 
-def env_consts():
-    import mjlab_microduck.tasks.microduck_ground_grasp_env_cfg as G
-    import mjlab_microduck.tasks.microduck_static_grasp_env_cfg as SG
-    return dict(open_rad=SG.STATIC_JAW_RAD, open_start=G.MOUTH_OPEN_START, open_end=G.MOUTH_OPEN_END,
-                close_start=G.CLOSE_START, close_end=G.CLOSE_END, nominal=SG.OBJECT_NOMINAL_XY,
-                limits=np.array(list(__import__("mjlab_microduck.robot.ground_grasp", fromlist=["x"])
-                                      .ground_grasp_joint_limits().values())))
+TASK = "Mjlab-StaticGrasp-FromPick-MicroDuck"
+_CONSTS = {}
 
 
-def rollout(onnx, obj="lego", seed=0, offset=(0.0, 0.0), freeze=False, qlog=None, pre=2.5, post=2.0, vin=7.4):
-    C = env_consts()
+def env_consts(task=None):
+    """Mouth timeline, object spot, hold window and joint limits of the task the policy was trained on."""
+    task = task or TASK
+    if task not in _CONSTS:
+        import mjlab_microduck.tasks  # noqa: F401
+        from mjlab.tasks.registry import load_env_cfg
+        from mjlab_microduck.robot.ground_grasp import ground_grasp_joint_limits
+        cfg = load_env_cfg(task)
+        m = cfg.actions["mouth"]
+        hs = cfg.rewards["hold_still"].params
+        _CONSTS[task] = dict(open_rad=m.open_rad, open_start=m.open_start, open_end=m.open_end,
+                             close_start=m.close_start, close_end=m.close_end,
+                             nominal=tuple(cfg.events["reset_object"].params["nominal_xy"]),
+                             hold=(hs["phase_start"], hs["phase_end"]),
+                             limits=np.array(list(ground_grasp_joint_limits().values())))
+    return _CONSTS[task]
+
+
+def rollout(onnx, obj="lego", seed=0, offset=(0.0, 0.0), freeze=False, qlog=None, pre=2.5, post=2.0, vin=7.4,
+            task=None):
+    C = env_consts(task)
+    ph_freeze = round(0.5 * (C["hold"][0] + C["hold"][1]), 2)
     sim = H.Sim(vin=vin, kp=200.0)
     rd = M.Robotd(sim, seed)
     rd.gp = ort.InferenceSession(str(onnx))
@@ -59,7 +74,7 @@ def rollout(onnx, obj="lego", seed=0, offset=(0.0, 0.0), freeze=False, qlog=None
     n_pick = int(round(0.7 * P / H.DT_CTRL))
     n_pre = int(round(pre / H.DT_CTRL))
     n_post = int(round(post / H.DT_CTRL))
-    k_freeze = n_pre + int(round(0.27 * P / H.DT_CTRL))
+    k_freeze = n_pre + int(round(ph_freeze * P / H.DT_CTRL))
     log, targets_raw, placed = [], [], None
     total = n_pre + n_pick + n_post if not freeze else k_freeze + int(round(3.0 / H.DT_CTRL))
     frozen = None
@@ -87,7 +102,7 @@ def rollout(onnx, obj="lego", seed=0, offset=(0.0, 0.0), freeze=False, qlog=None
             rd.gain = 200.0
         # the mouth: the training schedule during the pick, closed otherwise (open and still when frozen)
         if phase is not None and (in_pick or frozen is not None):
-            ph = min(phase, 0.27) if frozen is not None else phase
+            ph = min(phase, ph_freeze) if frozen is not None else phase
             op = np.clip((ph - C["open_start"]) / (C["open_end"] - C["open_start"]), 0, 1)
             cl = np.clip((ph - C["close_start"]) / (C["close_end"] - C["close_start"]), 0, 1)
             rd.mouth = M.MOUTH_CLOSED + op * (1 - cl) * (C["open_rad"] - M.MOUTH_CLOSED)
@@ -118,7 +133,7 @@ def rollout(onnx, obj="lego", seed=0, offset=(0.0, 0.0), freeze=False, qlog=None
         if qlog is not None:
             qlog.append((rd.t, d.qpos.copy()))
     pick = [r for r in log if r["phase"] is not None and r["phase"] < 0.7]
-    hold = [r for r in pick if 0.24 <= r["phase"] < 0.30]
+    hold = [r for r in pick if C["hold"][0] <= r["phase"] < C["hold"][1]]
     st = dict(seed=seed, object=obj, offset=list(offset),
               fell=bool(max(r["tilt"] for r in log[-10:]) > 60 or any(r["nonfoot"] for r in log)),
               beak_hold_min_mm=min(r["beak"] for r in hold), beak_hold_mean_mm=float(np.mean([r["beak"] for r in hold])),
@@ -157,6 +172,7 @@ def main():
     ap.add_argument("--seeds", type=int, default=4)
     ap.add_argument("--objects", default="lego,block,die,pawn,aa,coin")
     ap.add_argument("--freeze", action="store_true")
+    ap.add_argument("--task", default=TASK, help="the task the policy was trained on (its beak timeline, hold window)")
     ap.add_argument("--qlog", action="store_true", help="save the qpos of the first rollout (for films)")
     a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -164,7 +180,7 @@ def main():
     for obj in a.objects.split(","):
         for s in range(a.seeds):
             ql = [] if (a.qlog and not rows) else None
-            st, _ = rollout(a.onnx, obj, seed=s, qlog=ql)
+            st, _ = rollout(a.onnx, obj, seed=s, qlog=ql, task=a.task)
             rows.append(st)
             print(obj, s, json.dumps({k: (round(v, 2) if isinstance(v, float) else v) for k, v in st.items()
                                       if k not in ("offset", "lips_hold_mm")}), flush=True)
@@ -173,7 +189,10 @@ def main():
                 shape, half, _ = M.OBJECTS[obj]
                 np.savez(OUT / f"{a.name}_{obj}_s{s}.npz", t=np.array([q[0] for q in ql]), qpos=np.array([q[1] for q in ql]),
                          joint_names=np.array(names), object_size=np.array(half), object_shape=np.array(shape))
-    summ = dict(name=a.name, onnx=a.onnx, n=len(rows),
+    C = env_consts(a.task)
+    summ = dict(name=a.name, onnx=a.onnx, task=a.task, n=len(rows),
+                mouth=dict(open_frac=round(float((C["open_rad"] + 0.0873) / 0.6109), 3), open_start=C["open_start"],
+                           open_end=C["open_end"], close_start=C["close_start"], close_end=C["close_end"]),
                 success=sum(r.get("success", False) for r in rows), fell=sum(r["fell"] for r in rows),
                 touched=sum(r["touch_s"] > 0 for r in rows),
                 touch_s_mean=float(np.mean([r["touch_s"] for r in rows])),
@@ -181,7 +200,7 @@ def main():
                 margin_hold_min_cm=float(min(r["margin_hold_min_cm"] for r in rows)),
                 overrun_rad=float(max(r.get("overrun_rad", 0) for r in rows)))
     if a.freeze:
-        fz = [rollout(a.onnx, "lego", seed=s, freeze=True)[0] for s in range(a.seeds)]
+        fz = [rollout(a.onnx, "lego", seed=s, freeze=True, task=a.task)[0] for s in range(a.seeds)]
         summ.update(freeze_n=len(fz), freeze_fell=sum(f["freeze_fell"] for f in fz),
                     freeze_touch=sum(f["freeze_touch"] for f in fz),
                     freeze_beak_end_mm=[round(f["freeze_beak_end_mm"], 2) for f in fz],

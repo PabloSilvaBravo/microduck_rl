@@ -51,3 +51,13 @@ def test_strict_variant_prices_beak_support_harder():
     assert strict["head_floor_impact"].weight < base["head_floor_impact"].weight < 0
     assert strict["com_support"].params["outside_floor"] < -1.0 and strict["com_support"].weight > 0
     assert strict["lip_height_wide"].weight > 0 and strict["lip_height_wide"].params["std"] > base["lip_height"].params["std"]
+
+
+def test_retimed_variant_holds_before_the_bite():
+    cfg = load_env_cfg("Mjlab-StaticGrasp-Retimed-FromPick-MicroDuck")
+    m, r = cfg.actions["mouth"], cfg.rewards
+    at = r["approach_track"].params
+    assert at["down_at"] <= r["hold_still"].params["phase_start"] < r["hold_still"].params["phase_end"] <= m.close_start
+    assert m.close_start < m.close_end <= r["grasp_held"].params["phase_start"]
+    assert r["return_upright"].params["rise_end"] <= 0.70          # robotd hands back to the stand policy at 0.70
+    assert r["lip_height"].params["phase_end"] == m.close_start

@@ -407,3 +407,12 @@ register_mjlab_task(
     rl_cfg=MicroduckStaticGraspRlCfg,
     runner_cls=GroundGraspFromPickRunner,
 )
+
+# Retimed: the beak arrives by phase 0.24, holds still and low until 0.34, bites 0.34-0.40 (run 2 never hovered).
+register_mjlab_task(
+    task_id="Mjlab-StaticGrasp-Retimed-FromPick-MicroDuck",
+    env_cfg=make_microduck_static_grasp_env_cfg(retimed=True),
+    play_env_cfg=make_microduck_static_grasp_env_cfg(play=True, retimed=True),
+    rl_cfg=MicroduckStaticGraspRlCfg,
+    runner_cls=GroundGraspFromPickRunner,
+)

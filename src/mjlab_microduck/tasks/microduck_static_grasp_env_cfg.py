@@ -46,10 +46,39 @@ STRICT = dict(beak_touch_weight=-10.0, beak_touch_threshold=0.2, beak_force_weig
               lip_wide_std=0.02, hold_start=0.20)
 
 
-def make_microduck_static_grasp_env_cfg(play: bool = False, strict: bool = False) -> ManagerBasedRlEnvCfg:
+# Retimed (run 3): run 2 (sg-r2-strict-1026, cancelled at it ~550) kept the CoM inside the feet but never hovered:
+# the inherited approach target hovers 6 cm above the object until phase 0.20 and reaches it at 0.29, one tick
+# before the bite, so the beak arrived with a 6 N impact and rested on the floor through the bite. Here the beak
+# arrives by 0.24, holds still and low until 0.34, bites over 0.34-0.40, and the duck is up by 0.66 (robotd hands
+# back to the stand policy at 0.70). The beak timeline is played by the client (duck-static-grasp-test), not robotd.
+TIMELINE = dict(hover_at=0.16, down_at=0.24, hold_start=0.24, close_start=0.34, close_end=0.40, held_from=0.44,
+                return_start=0.44, return_end=0.66, still_weight=0.2)
+
+
+def _retime(cfg, t):
+    m = cfg.actions["mouth"]
+    m.close_start, m.close_end = t["close_start"], t["close_end"]
+    r = cfg.rewards
+    r["grasp_held"].params["phase_start"] = t["held_from"]
+    r["grasp_lift"].params["phase_start"] = t["close_start"] + 0.03
+    r["approach_track"].params.update(hover_at=t["hover_at"], down_at=t["down_at"], phase_end=t["close_end"])
+    r["object_pushed"].params["phase_end"] = t["close_end"]
+    r["approach_lateral"].params["phase_end"] = t["close_start"]
+    for name in ("ground_pick_return_pose_legs", "ground_pick_return_pose_neck", "return_upright"):
+        r[name].params["hold_end"] = t["return_start"]
+        r[name].params["rise_end"] = t["return_end"]
+    r["neck_vel_descent"].params["hold_end"] = t["close_start"]
+
+
+def make_microduck_static_grasp_env_cfg(play: bool = False, strict: bool = False,
+                                        retimed: bool = False) -> ManagerBasedRlEnvCfg:
     cfg = make_microduck_ground_grasp_env_cfg(play=play)
-    k = STRICT if strict else {}
-    hold_start = k.get("hold_start", HOLD_START)
+    k = STRICT if (strict or retimed) else {}
+    t = TIMELINE if retimed else None
+    hold_start = t["hold_start"] if t else k.get("hold_start", HOLD_START)
+    hold_end = t["close_end"] if t else HOLD_END            # pose and balance through the bite
+    lip_end = t["close_start"] if t else 0.31               # lips and stillness until the bite starts
+    still_end = t["close_start"] if t else 0.30
 
     cfg.actions["mouth"].open_rad = STATIC_JAW_RAD
     cfg.events["reset_object"].params["nominal_xy"] = OBJECT_NOMINAL_XY
@@ -66,26 +95,29 @@ def make_microduck_static_grasp_env_cfg(play: bool = False, strict: bool = False
     cfg.rewards["static_pose"] = RewardTermCfg(
         func=microduck_mdp.static_pose_track, weight=k.get("static_pose_weight", STATIC_POSE_WEIGHT),
         params={"target": STATIC_POSE, "command_name": "twist", "std": k.get("static_pose_std", 0.25),
-                "phase_start": hold_start, "phase_end": HOLD_END},
+                "phase_start": hold_start, "phase_end": hold_end},
     )
     cfg.rewards["lip_height"] = RewardTermCfg(
         func=microduck_mdp.lip_height_track, weight=LIP_HEIGHT_WEIGHT,
         params={"command_name": "twist", "target": LIP_TARGET, "std": 0.004,
-                "phase_start": HOLD_START + 0.02, "phase_end": 0.31},
+                "phase_start": hold_start + 0.01 if t else HOLD_START + 0.02, "phase_end": lip_end},
     )
     cfg.rewards["hold_still"] = RewardTermCfg(
-        func=microduck_mdp.hold_stillness, weight=HOLD_STILL_WEIGHT,
-        params={"command_name": "twist", "phase_start": HOLD_START + 0.02, "phase_end": 0.30},
+        func=microduck_mdp.hold_stillness, weight=t["still_weight"] if t else HOLD_STILL_WEIGHT,
+        params={"command_name": "twist", "phase_start": hold_start + 0.01 if t else HOLD_START + 0.02,
+                "phase_end": still_end},
     )
     cfg.rewards["com_support"] = RewardTermCfg(
         func=microduck_mdp.com_support_margin, weight=k.get("com_support_weight", COM_SUPPORT_WEIGHT),
-        params={"command_name": "twist", "phase_start": hold_start, "phase_end": HOLD_END,
+        params={"command_name": "twist", "phase_start": hold_start, "phase_end": hold_end,
                 "outside_floor": k.get("com_outside_floor", -1.0)},
     )
-    if strict:
+    if strict or retimed:
         cfg.rewards["lip_height_wide"] = RewardTermCfg(
             func=microduck_mdp.lip_height_track, weight=k["lip_wide_weight"],
             params={"command_name": "twist", "target": LIP_TARGET, "std": k["lip_wide_std"],
-                    "phase_start": hold_start, "phase_end": 0.31},
+                    "phase_start": hold_start, "phase_end": lip_end},
         )
+    if t:
+        _retime(cfg, t)
     return cfg
