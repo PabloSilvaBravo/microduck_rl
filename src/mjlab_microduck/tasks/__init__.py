@@ -380,3 +380,21 @@ register_mjlab_task(
     rl_cfg=MicroduckGroundGraspRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
+
+
+# ── Static grasp (2026-10-26): the ground-grasp move held in a statically stable crouch, beak 1-2 mm off the floor ──
+import copy as _copy
+
+from .microduck_static_grasp_env_cfg import make_microduck_static_grasp_env_cfg
+
+MicroduckStaticGraspRlCfg = _copy.deepcopy(MicroduckGroundGraspRlCfg)
+MicroduckStaticGraspRlCfg.experiment_name = "static_grasp"
+MicroduckStaticGraspRlCfg.run_name = "static_grasp"
+
+register_mjlab_task(
+    task_id="Mjlab-StaticGrasp-FromPick-MicroDuck",
+    env_cfg=make_microduck_static_grasp_env_cfg(),
+    play_env_cfg=make_microduck_static_grasp_env_cfg(play=True),
+    rl_cfg=MicroduckStaticGraspRlCfg,
+    runner_cls=GroundGraspFromPickRunner,
+)

@@ -8144,3 +8144,112 @@ def action_target_overrun_l1(
     lims = torch.tensor(limits, device=env.device, dtype=target.dtype)
     over = torch.clamp(lims[:, 0].unsqueeze(0) - target, min=0.0) + torch.clamp(target - lims[:, 1].unsqueeze(0), min=0.0)
     return torch.nan_to_num(over, nan=0.0).sum(dim=-1)
+
+
+# ── Static grasp (2026-10-26): the open beak hovers 1-2 mm above the floor in a statically stable crouch ──────────
+# Design: notes/static-grasp (sg_search found the pose: both lips <= 2 mm, CoM 1.37 cm inside the feet; it holds with
+# constant targets). These terms pull the ground-grasp move into that pose for its hold window and forbid leaning on
+# the beak.
+
+
+def static_pose_track(
+    env: ManagerBasedRlEnv,
+    target: list,
+    command_name: str = "twist",
+    std: float = 0.25,
+    phase_start: float = 0.22,
+    phase_end: float = 0.36,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Gaussian on the RMS error (rad) of the 14 servos to the static grasp pose `target` (servo order), inside the
+    hold window."""
+    asset = env.scene[asset_cfg.name]
+    q = _servo_joint_pos(env, asset)
+    t = torch.tensor(target, device=env.device, dtype=q.dtype).unsqueeze(0)
+    mse = ((q - t) ** 2).mean(-1)
+    phase = _gp_phase(env, command_name)
+    gate = ((phase >= phase_start) & (phase < phase_end)).float()
+    return gate * torch.exp(-mse / std ** 2)
+
+
+def lip_height_track(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    target: float = 0.0015,
+    std: float = 0.004,
+    phase_start: float = 0.24,
+    phase_end: float = 0.31,
+) -> torch.Tensor:
+    """Gaussian on the mean height of the two lips (sites lip_up and jaw_tip_bottom) around `target` (m) in the hold
+    window. Touching the floor is priced separately (beak_floor_touch), so the Gaussian alone never pays for it."""
+    robot: Entity = env.scene["robot"]
+    c = _gg_cache(env)
+    if "lip_site_ids" not in c:
+        ids, _ = robot.find_sites(["lip_up", "jaw_tip_bottom"], preserve_order=True)
+        c["lip_site_ids"] = ids
+    ids = c["lip_site_ids"]
+    z = 0.5 * (robot.data.site_pos_w[:, ids[0], 2] + robot.data.site_pos_w[:, ids[1], 2])
+    phase = _gp_phase(env, command_name)
+    gate = ((phase >= phase_start) & (phase < phase_end)).float()
+    return gate * torch.exp(-((z - target) / std) ** 2)
+
+
+def beak_floor_touch(
+    env: ManagerBasedRlEnv,
+    sensor_names: tuple = ("head_floor_contact", "jaw_floor_contact"),
+    threshold: float = 0.05,
+) -> torch.Tensor:
+    """POSITIVE cost (-> negative weight): 1 per step while the head or the jaw presses the floor with more than
+    `threshold` N. The static grasp must never lean on its beak (body_impact_cost only prices the force)."""
+    touch = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    for name in sensor_names:
+        if name in env.scene.sensors:
+            f = env.scene.sensors[name].data.force.reshape(env.num_envs, -1, 3)
+            touch |= torch.norm(f, dim=-1).amax(-1) > threshold
+    return touch.float()
+
+
+def hold_stillness(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    phase_start: float = 0.24,
+    phase_end: float = 0.30,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """-sum of squared servo velocities (rad/s) in the hold window: the pose is held, not swung through.
+    Self-negating (<= 0): POSITIVE weight."""
+    asset = env.scene[asset_cfg.name]
+    v = _servo_joint_vel(env, asset)
+    phase = _gp_phase(env, command_name)
+    gate = ((phase >= phase_start) & (phase < phase_end)).float()
+    return -gate * (v ** 2).sum(-1)
+
+
+def com_support_margin(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    phase_start: float = 0.22,
+    phase_end: float = 0.36,
+    x_back: float = -0.0158,
+    x_front: float = 0.0298,
+    scale: float = 0.01,
+) -> torch.Tensor:
+    """Static balance in the hold window: the whole robot's centre of mass, along the heading, against the soles'
+    front and back edges (x_back / x_front: measured from the midpoint of the foot sites, sg_model, flat feet).
+    Returns clamp(margin / scale, -1, 1): +1 with >= 1 cm to spare, negative once the CoM is past an edge."""
+    robot: Entity = env.scene["robot"]
+    c = _gg_cache(env)
+    if "foot_site_ids" not in c:
+        ids, _ = robot.find_sites(["left_foot", "right_foot"], preserve_order=True)
+        c["foot_site_ids"] = ids
+    ids = c["foot_site_ids"]
+    mid = 0.5 * (robot.data.site_pos_w[:, ids[0]] + robot.data.site_pos_w[:, ids[1]])
+    com = robot.data.data.subtree_com[:, robot.indexing.root_body_id]
+    fwd = matrix_from_quat(robot.data.root_link_quat_w)[:, :, 0]
+    fwd = torch.stack([fwd[:, 0], fwd[:, 1]], dim=-1)
+    fwd = fwd / torch.clamp(torch.norm(fwd, dim=-1, keepdim=True), min=1e-6)
+    x = ((com[:, :2] - mid[:, :2]) * fwd).sum(-1)
+    margin = torch.minimum(x - x_back, x_front - x)
+    phase = _gp_phase(env, command_name)
+    gate = ((phase >= phase_start) & (phase < phase_end)).float()
+    return gate * torch.clamp(margin / scale, -1.0, 1.0)
