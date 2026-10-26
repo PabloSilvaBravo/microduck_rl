@@ -8255,3 +8255,39 @@ def com_support_margin(
     phase = _gp_phase(env, command_name)
     gate = ((phase >= phase_start) & (phase < phase_end)).float()
     return gate * torch.clamp(margin / scale, outside_floor, 1.0)
+
+
+def head_level_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    phase_start: float = 0.24,
+    phase_end: float = 0.40,
+    joint_names: tuple = ("head_yaw", "head_roll"),
+) -> torch.Tensor:
+    """-sum of squared head yaw / roll (rad) in the window: the open beak stays level sideways, so its full width
+    hovers at the same height (run 3 yawed the head 13° and rested one corner of the beak on the floor).
+    Self-negating (<= 0): POSITIVE weight."""
+    robot: Entity = env.scene["robot"]
+    c = _gg_cache(env)
+    key = ("head_level_ids",) + tuple(joint_names)
+    if key not in c:
+        c[key] = [int(robot.find_joints(n)[0][0]) for n in joint_names]
+    q = robot.data.joint_pos[:, c[key]]
+    phase = _gp_phase(env, command_name)
+    gate = ((phase >= phase_start) & (phase < phase_end)).float()
+    return -gate * (q ** 2).sum(-1)
+
+
+def beak_floor_contact_in_window(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    phase_start: float = 0.22,
+    phase_end: float = 0.34,
+    sensor_names: tuple = ("head_floor_contact", "jaw_floor_contact"),
+    threshold: float = 0.5,
+) -> torch.Tensor:
+    """TERMINATION: the head or jaw presses the floor with more than `threshold` N inside the window (the hover:
+    the static grasp must not rest on its beak; light contact during the bite is priced, not terminated)."""
+    phase = _gp_phase(env, command_name)
+    gate = (phase >= phase_start) & (phase < phase_end)
+    return gate & (beak_floor_touch(env, sensor_names, threshold) > 0)

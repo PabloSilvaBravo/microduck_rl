@@ -416,3 +416,12 @@ register_mjlab_task(
     rl_cfg=MicroduckStaticGraspRlCfg,
     runner_cls=GroundGraspFromPickRunner,
 )
+
+# Hover: retimed + level head + episode ends if the beak presses the floor (> 0.5 N) during the hold (run 3 rested on it).
+register_mjlab_task(
+    task_id="Mjlab-StaticGrasp-Hover-FromPick-MicroDuck",
+    env_cfg=make_microduck_static_grasp_env_cfg(hover=True),
+    play_env_cfg=make_microduck_static_grasp_env_cfg(play=True, hover=True),
+    rl_cfg=MicroduckStaticGraspRlCfg,
+    runner_cls=GroundGraspFromPickRunner,
+)

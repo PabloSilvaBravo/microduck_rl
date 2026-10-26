@@ -18,7 +18,7 @@ pick, 4 s period, hand-over at phase 0.70), with:
 """
 
 from mjlab.envs import ManagerBasedRlEnvCfg
-from mjlab.managers import RewardTermCfg
+from mjlab.managers import RewardTermCfg, TerminationTermCfg
 
 from mjlab_microduck.tasks import mdp as microduck_mdp
 from mjlab_microduck.tasks.microduck_ground_grasp_env_cfg import make_microduck_ground_grasp_env_cfg
@@ -70,8 +70,15 @@ def _retime(cfg, t):
     r["neck_vel_descent"].params["hold_end"] = t["close_start"]
 
 
-def make_microduck_static_grasp_env_cfg(play: bool = False, strict: bool = False,
-                                        retimed: bool = False) -> ManagerBasedRlEnvCfg:
+# Hover (run 4, resumed from run 3): run 3 · 500 grasped 6/6 with the CoM inside the feet, but yawed the head 13° and
+# rested a corner of the beak on the floor at ~1 N through the hold. Keep the head level, and END the episode when the
+# beak presses the floor above 0.5 N during the hold (light contact during the bite stays priced, not terminated).
+HOVER = dict(head_level_weight=40.0, contact_end_threshold=0.5)
+
+
+def make_microduck_static_grasp_env_cfg(play: bool = False, strict: bool = False, retimed: bool = False,
+                                        hover: bool = False) -> ManagerBasedRlEnvCfg:
+    retimed = retimed or hover
     cfg = make_microduck_ground_grasp_env_cfg(play=play)
     k = STRICT if (strict or retimed) else {}
     t = TIMELINE if retimed else None
@@ -120,4 +127,14 @@ def make_microduck_static_grasp_env_cfg(play: bool = False, strict: bool = False
         )
     if t:
         _retime(cfg, t)
+    if hover:
+        cfg.rewards["head_level"] = RewardTermCfg(
+            func=microduck_mdp.head_level_penalty, weight=HOVER["head_level_weight"],
+            params={"command_name": "twist", "phase_start": hold_start, "phase_end": t["close_end"]},
+        )
+        cfg.terminations["beak_on_floor"] = TerminationTermCfg(
+            func=microduck_mdp.beak_floor_contact_in_window, time_out=False,
+            params={"command_name": "twist", "phase_start": hold_start - 0.02, "phase_end": t["close_start"],
+                    "threshold": HOVER["contact_end_threshold"]},
+        )
     return cfg

@@ -61,3 +61,11 @@ def test_retimed_variant_holds_before_the_bite():
     assert m.close_start < m.close_end <= r["grasp_held"].params["phase_start"]
     assert r["return_upright"].params["rise_end"] <= 0.70          # robotd hands back to the stand policy at 0.70
     assert r["lip_height"].params["phase_end"] == m.close_start
+
+
+def test_hover_variant_levels_the_head_and_ends_on_beak_contact():
+    cfg = load_env_cfg("Mjlab-StaticGrasp-Hover-FromPick-MicroDuck")
+    assert cfg.rewards["head_level"].func is M.head_level_penalty and cfg.rewards["head_level"].weight > 0
+    t = cfg.terminations["beak_on_floor"]
+    assert t.func is M.beak_floor_contact_in_window and not t.time_out
+    assert t.params["phase_end"] <= cfg.actions["mouth"].close_start     # the bite itself is not terminated
